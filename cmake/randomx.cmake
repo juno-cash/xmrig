@@ -17,6 +17,7 @@ if (WITH_RANDOMX)
     set(WITH_ARGON2 ON)
 
     list(APPEND HEADERS_CRYPTO
+        src/crypto/rx/JunoSeed.h
         src/crypto/rx/Rx.h
         src/crypto/rx/RxAlgo.h
         src/crypto/rx/RxBasicStorage.h
@@ -46,6 +47,7 @@ if (WITH_RANDOMX)
         src/crypto/randomx/vm_compiled.cpp
         src/crypto/randomx/vm_interpreted_light.cpp
         src/crypto/randomx/vm_interpreted.cpp
+        src/crypto/rx/JunoSeed.cpp
         src/crypto/rx/Rx.cpp
         src/crypto/rx/RxAlgo.cpp
         src/crypto/rx/RxBasicStorage.cpp

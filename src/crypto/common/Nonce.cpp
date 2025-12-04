@@ -65,6 +65,39 @@ bool xmrig::Nonce::next(uint8_t index, uint32_t *nonce, uint32_t reserveCount, u
 }
 
 
+bool xmrig::Nonce::next256(uint8_t index, uint8_t *nonce, uint32_t reserveCount)
+{
+    // For 256-bit (32-byte) nonces, we use the first 8 bytes as a counter
+    // The remaining 24 bytes should be random entropy set at job start
+    // This provides 2^64 nonce space which is sufficient for any practical mining
+
+    if (reserveCount == 0) {
+        return false;
+    }
+
+    uint64_t counter = m_nonces[index].fetch_add(reserveCount, std::memory_order_relaxed);
+
+    // Check for overflow (shouldn't happen in practice)
+    if (counter > 0x7FFFFFFFFFFFFFFFULL) {
+        return false;
+    }
+
+    // Write counter to first 8 bytes (little-endian)
+    nonce[0] = counter & 0xFF;
+    nonce[1] = (counter >> 8) & 0xFF;
+    nonce[2] = (counter >> 16) & 0xFF;
+    nonce[3] = (counter >> 24) & 0xFF;
+    nonce[4] = (counter >> 32) & 0xFF;
+    nonce[5] = (counter >> 40) & 0xFF;
+    nonce[6] = (counter >> 48) & 0xFF;
+    nonce[7] = (counter >> 56) & 0xFF;
+
+    // Bytes 8-31 remain as they were (random entropy from job setup)
+
+    return true;
+}
+
+
 void xmrig::Nonce::stop()
 {
     pause(false);

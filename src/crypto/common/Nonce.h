@@ -46,6 +46,7 @@ public:
     static inline void touch(Backend backend)                           { m_sequence[backend]++; }
 
     static bool next(uint8_t index, uint32_t *nonce, uint32_t reserveCount, uint64_t mask);
+    static bool next256(uint8_t index, uint8_t *nonce, uint32_t reserveCount);
     static void stop();
     static void touch();
 

@@ -154,6 +154,11 @@ bool xmrig::Job::setTarget(const char *target)
 
 size_t xmrig::Job::nonceOffset() const
 {
+    // Juno Cash has 32-byte nonce at offset 108 in 140-byte header
+    if (m_coin == Coin::JUNO) {
+        return 108;
+    }
+
     switch (algorithm().family()) {
     case Algorithm::KAWPOW:
         return 32;
@@ -231,6 +236,7 @@ uint32_t xmrig::Job::getNumTransactions() const
 void xmrig::Job::copy(const Job &other)
 {
     m_algorithm  = other.m_algorithm;
+    m_coin       = other.m_coin;
     m_nicehash   = other.m_nicehash;
     m_size       = other.m_size;
     m_clientId   = other.m_clientId;
@@ -282,6 +288,7 @@ void xmrig::Job::copy(const Job &other)
 void xmrig::Job::move(Job &&other)
 {
     m_algorithm  = other.m_algorithm;
+    m_coin       = other.m_coin;
     m_nicehash   = other.m_nicehash;
     m_size       = other.m_size;
     m_clientId   = std::move(other.m_clientId);

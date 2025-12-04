@@ -29,6 +29,7 @@
 #include <cstring>
 
 
+#include "base/crypto/Coin.h"
 #include "base/net/stratum/Job.h"
 #include "base/tools/Alignment.h"
 #include "crypto/common/Nonce.h"
@@ -89,6 +90,10 @@ public:
     inline int32_t nonceOffset() const { return currentJob().nonceOffset(); }
     inline size_t nonceSize() const { return currentJob().nonceSize(); }
 
+    // For Juno's 32-byte nonce
+    inline uint8_t *nonce256(size_t i = 0) { return blob() + (i * currentJob().size()) + nonceOffset(); }
+    inline bool isJuno() const { return currentJob().coin() == Coin::JUNO; }
+
 private:
     inline uint64_t nonceMask() const     { return m_nonce_mask[index()]; }
 
@@ -130,6 +135,24 @@ inline bool xmrig::WorkerJob<1>::nextRound(uint32_t rounds, uint32_t roundSize)
 {
     m_rounds[index()]++;
 
+    // Handle Juno's 32-byte nonce differently
+    if (isJuno()) {
+        uint8_t* n256 = nonce256();
+        if ((m_rounds[index()] & (rounds - 1)) == 0) {
+            if (!Nonce::next256(index(), n256, rounds * roundSize)) {
+                return false;
+            }
+        }
+        else {
+            // Increment the lower 64 bits (first 8 bytes, little-endian)
+            uint64_t counter;
+            memcpy(&counter, n256, sizeof(counter));
+            counter += roundSize;
+            memcpy(n256, &counter, sizeof(counter));
+        }
+        return true;
+    }
+
     uint32_t* n = nonce();
 
     if ((m_rounds[index()] & (rounds - 1)) == 0) {
@@ -159,7 +182,20 @@ inline void xmrig::WorkerJob<1>::save(const Job &job, uint32_t reserveCount, Non
     m_jobs[index()].setBackend(backend);
 
     memcpy(blob(), job.blob(), job.size());
-    Nonce::next(index(), nonce(), reserveCount, nonceMask());
+
+    // Handle Juno's 32-byte nonce differently
+    if (job.coin() == Coin::JUNO) {
+        // Initialize the nonce area: first 8 bytes will be counter, rest is random entropy
+        uint8_t* n256 = blob() + job.nonceOffset();
+        // Fill bytes 8-31 with random entropy (bytes 0-7 will be set by Nonce::next256)
+        for (size_t i = 8; i < 32; ++i) {
+            n256[i] = static_cast<uint8_t>(rand() & 0xFF);
+        }
+        Nonce::next256(index(), n256, reserveCount);
+    }
+    else {
+        Nonce::next(index(), nonce(), reserveCount, nonceMask());
+    }
 }
 
 

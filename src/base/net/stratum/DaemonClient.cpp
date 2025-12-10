@@ -214,11 +214,17 @@ int64_t xmrig::DaemonClient::submit(const JobResult &result)
             block_hex[i * 2 + 1] = hexmap[block[i] & 15];
         }
 
+        // Build JSON-RPC 1.0 request for submitblock
         using namespace rapidjson;
         Document doc(kObjectType);
+        auto &allocator = doc.GetAllocator();
+        doc.AddMember("jsonrpc", "1.0", allocator);
+        doc.AddMember("id", m_sequence, allocator);
+        doc.AddMember("method", "submitblock", allocator);
         Value params(kArrayType);
-        params.PushBack(Value(block_hex.c_str(), (rapidjson::SizeType)block_hex.size(), doc.GetAllocator()), doc.GetAllocator());
-        JsonRequest::create(doc, m_sequence, "submitblock", params);
+        params.PushBack(Value(block_hex.c_str(), (rapidjson::SizeType)block_hex.size(), allocator), allocator);
+        doc.AddMember("params", params, allocator);
+
         m_results[m_sequence] = SubmitResult(m_sequence, result.diff, result.actualDiff(), 0, result.backend);
         std::map<std::string, std::string> headers;
         headers.insert({"X-Hash-Difficulty", std::to_string(result.actualDiff())});
@@ -299,9 +305,17 @@ void xmrig::DaemonClient::connect()
         m_pool.setAlgo(m_coin.algorithm());
     }
 
+#ifdef SUPPORT_JUNOCASH
+    // Junocash doesn't need wallet address - node constructs coinbase
+    const bool isJunocash = m_coin.isValid() && m_coin.name() && std::string(m_coin.name()) == std::string("Junocash");
+    if ((m_apiVersion == API_MONERO) && !m_walletAddress.isValid() && !isJunocash) {
+        return connectError("Invalid wallet address.");
+    }
+#else
     if ((m_apiVersion == API_MONERO) && !m_walletAddress.isValid()) {
         return connectError("Invalid wallet address.");
     }
+#endif
 
     if (m_pool.zmq_port() >= 0) {
         m_dns = Dns::resolve(m_pool.host(), this);
@@ -416,6 +430,14 @@ void xmrig::DaemonClient::onTimer(const Timer *)
         connect();
     }
     else if (m_state == ConnectedState) {
+#ifdef SUPPORT_JUNOCASH
+        // Junocash uses JSON-RPC for polling, not HTTP GET endpoints
+        const bool isJunocash = m_coin.isValid() && m_coin.name() && std::string(m_coin.name()) == std::string("Junocash");
+        if (isJunocash) {
+            getBlockTemplate();
+            return;
+        }
+#endif
         send((m_apiVersion == API_MONERO) ? kGetHeight : kGetInfo);
     }
 }
@@ -505,7 +527,7 @@ bool xmrig::DaemonClient::parseJob(const rapidjson::Value &params, int *code)
         m_currentJobId = Cvt::toHex(Cvt::randomBytes(4));
         job.setId(m_currentJobId);
         m_job              = std::move(job);
-        m_prevHash         = Json::getString(params, "prev_hash");
+        m_prevHash         = Json::getString(params, "previousblockhash");
         m_jobSteadyMs      = Chrono::steadyMSecs();
         if (m_state == ConnectingState) { setState(ConnectedState); }
         m_listener->onJobReceived(this, m_job, params);
@@ -652,6 +674,12 @@ bool xmrig::DaemonClient::parseResponse(int64_t id, const rapidjson::Value &resu
 #ifdef SUPPORT_JUNOCASH
     // Junocash templates have "height" but no "blocktemplate_blob"
     if (m_coin.isValid() && m_coin.name() && std::string(m_coin.name()) == std::string("Junocash") && result.HasMember("height")) {
+        // Check if block has changed before processing
+        const char* newPrevHash = Json::getString(result, "previousblockhash");
+        const uint64_t newHeight = Json::getUint64(result, kHeight);
+        if (!isOutdated(newHeight, newPrevHash)) {
+            return true;  // Job unchanged, skip
+        }
         if (parseJob(result, &code)) {
             return true;
         }
@@ -682,15 +710,27 @@ int64_t xmrig::DaemonClient::getBlockTemplate()
     Document doc(kObjectType);
     auto &allocator = doc.GetAllocator();
 
-    Value params(kObjectType);
 #ifdef SUPPORT_JUNOCASH
     if (m_coin.isValid() && m_coin.name() && std::string(m_coin.name())==std::string("Junocash")) {
-        // Junocash: the node constructs coinbase; no wallet/extranonce needed
-        JsonRequest::create(doc, m_sequence, "getblocktemplate", params);
+        // Junocash uses Bitcoin-style JSON-RPC 1.0 with array params
+        doc.AddMember("jsonrpc", "1.0", allocator);
+        doc.AddMember("id", m_sequence, allocator);
+        doc.AddMember("method", "getblocktemplate", allocator);
+        Value params(kArrayType);
+        Value reqObj(kObjectType);
+        // Request capabilities
+        Value caps(kArrayType);
+        caps.PushBack("coinbasetxn", allocator);
+        caps.PushBack("workid", allocator);
+        caps.PushBack("coinbase/append", allocator);
+        reqObj.AddMember("capabilities", caps, allocator);
+        params.PushBack(reqObj, allocator);
+        doc.AddMember("params", params, allocator);
     }
     else
 #endif
     {
+        Value params(kObjectType);
         params.AddMember("wallet_address", m_user.toJSON(), allocator);
         params.AddMember("extra_nonce", Cvt::toHex(Cvt::randomBytes(kBlobReserveSize)).toJSON(doc), allocator);
         JsonRequest::create(doc, m_sequence, "getblocktemplate", params);
@@ -702,10 +742,39 @@ int64_t xmrig::DaemonClient::getBlockTemplate()
 
 int64_t xmrig::DaemonClient::rpcSend(const rapidjson::Document &doc, const std::map<std::string, std::string> &headers)
 {
-    FetchRequest req(HTTP_POST, m_pool.host(), m_pool.port(), kJsonRPC, doc, m_pool.isTLS(), isQuiet());
+#ifdef SUPPORT_JUNOCASH
+    // Junocash uses Bitcoin-style RPC: path "/" and jsonrpc 1.0
+    const bool isJunocash = m_coin.isValid() && m_coin.name() && std::string(m_coin.name()) == std::string("Junocash");
+    const char *rpcPath = isJunocash ? "/" : kJsonRPC;
+#else
+    const char *rpcPath = kJsonRPC;
+#endif
+
+    FetchRequest req(HTTP_POST, m_pool.host(), m_pool.port(), rpcPath, doc, m_pool.isTLS(), isQuiet());
     for (const auto &header : headers) {
         req.headers.insert(header);
     }
+
+#ifdef SUPPORT_JUNOCASH
+    // Add Basic authentication header for Junocash
+    if (isJunocash && !m_user.isEmpty() && !m_password.isEmpty()) {
+        std::string credentials = std::string(m_user.data()) + ":" + std::string(m_password.data());
+        // Base64 encode credentials
+        static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        std::string encoded;
+        encoded.reserve(((credentials.size() + 2) / 3) * 4);
+        for (size_t i = 0; i < credentials.size(); i += 3) {
+            uint32_t n = (uint8_t)credentials[i] << 16;
+            if (i + 1 < credentials.size()) n |= (uint8_t)credentials[i + 1] << 8;
+            if (i + 2 < credentials.size()) n |= (uint8_t)credentials[i + 2];
+            encoded.push_back(b64[(n >> 18) & 0x3f]);
+            encoded.push_back(b64[(n >> 12) & 0x3f]);
+            encoded.push_back((i + 1 < credentials.size()) ? b64[(n >> 6) & 0x3f] : '=');
+            encoded.push_back((i + 2 < credentials.size()) ? b64[n & 0x3f] : '=');
+        }
+        req.headers.insert({"Authorization", "Basic " + encoded});
+    }
+#endif
 
     fetch(tag(), std::move(req), m_httpListener);
 

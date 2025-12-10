@@ -141,23 +141,79 @@ int64_t xmrig::DaemonClient::submit(const JobResult &result)
     }
 #ifdef SUPPORT_JUNOCASH
     if (m_coin.isValid() && m_coin.name() && std::string(m_coin.name())==std::string("Junocash")) {
-        if (!m_junoTpl || !result.junocashNonce()) {
+        if (!m_junoTpl || !result.junocashNonce() || !result.junocashHash()) {
             return -1;
         }
-        // Build header with winning nonce
+
+        // Build block: header (108 bytes) + nonce (32 bytes) + nSolution + tx_count + coinbase + transactions
+        // nSolution format: varint(size) + RandomX hash (32 bytes)
         std::vector<uint8_t> block;
-        block.reserve(140 + 1024);
-        block.insert(block.end(), m_junoTpl->header_base.begin(), m_junoTpl->header_base.begin()+108);
-        block.insert(block.end(), result.junocashNonce(), result.junocashNonce()+32);
-        // Append coinbase and other txs (hex to bytes)
-        auto hex2bin=[&](const std::string& hx){ std::vector<uint8_t> o; o.reserve(hx.size()/2); auto v=[](char c){ if(c>='0' and c<='9')return c-'0'; if(c>='a' and c<='f')return c-'a'+10; if(c>='A' and c<='F')return c-'A'+10; return 0; }; for(size_t i=0;i+1<hx.size();i+=2)o.push_back((uint8_t)((v(hx[i])<<4)|v(hx[i+1]))); return o; };
+        block.reserve(256 + 4096);
+
+        // Header base (108 bytes)
+        block.insert(block.end(), m_junoTpl->header_base.begin(), m_junoTpl->header_base.begin() + 108);
+
+        // Nonce (32 bytes)
+        block.insert(block.end(), result.junocashNonce(), result.junocashNonce() + 32);
+
+        // nSolution: varint(32) + 32-byte RandomX hash
+        // Size is always 32 bytes, so varint is just 0x20
+        block.push_back(0x20);
+
+        // RandomX hash (32 bytes) - this is the PoW result
+        block.insert(block.end(), result.junocashHash(), result.junocashHash() + 32);
+
+        // Transaction count as varint: 1 (coinbase) + number of other transactions
+        uint64_t tx_count = 1 + m_junoTpl->txn_hex.size();
+        if (tx_count < 0xfd) {
+            block.push_back(static_cast<uint8_t>(tx_count));
+        } else if (tx_count <= 0xffff) {
+            block.push_back(0xfd);
+            block.push_back(static_cast<uint8_t>(tx_count & 0xff));
+            block.push_back(static_cast<uint8_t>((tx_count >> 8) & 0xff));
+        } else {
+            block.push_back(0xfe);
+            block.push_back(static_cast<uint8_t>(tx_count & 0xff));
+            block.push_back(static_cast<uint8_t>((tx_count >> 8) & 0xff));
+            block.push_back(static_cast<uint8_t>((tx_count >> 16) & 0xff));
+            block.push_back(static_cast<uint8_t>((tx_count >> 24) & 0xff));
+        }
+
+        // Hex-to-bytes helper
+        auto hex2bin = [](const std::string& hx) {
+            std::vector<uint8_t> o;
+            o.reserve(hx.size() / 2);
+            auto v = [](char c) {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                return 0;
+            };
+            for (size_t i = 0; i + 1 < hx.size(); i += 2) {
+                o.push_back((uint8_t)((v(hx[i]) << 4) | v(hx[i + 1])));
+            }
+            return o;
+        };
+
+        // Coinbase transaction
         auto cb = hex2bin(m_junoTpl->coinbase_txn_hex);
         block.insert(block.end(), cb.begin(), cb.end());
-        for (auto &txhex : m_junoTpl->txn_hex) { auto tb=hex2bin(txhex); block.insert(block.end(), tb.begin(), tb.end()); }
+
+        // Other transactions
+        for (const auto& txhex : m_junoTpl->txn_hex) {
+            auto tb = hex2bin(txhex);
+            block.insert(block.end(), tb.begin(), tb.end());
+        }
+
         // Hex-encode full block
         static const char hexmap[] = "0123456789abcdef";
-        std::string block_hex; block_hex.resize(block.size()*2);
-        for (size_t i=0;i<block.size();++i){ block_hex[i*2]=hexmap[block[i]>>4]; block_hex[i*2+1]=hexmap[block[i]&15]; }
+        std::string block_hex;
+        block_hex.resize(block.size() * 2);
+        for (size_t i = 0; i < block.size(); ++i) {
+            block_hex[i * 2] = hexmap[block[i] >> 4];
+            block_hex[i * 2 + 1] = hexmap[block[i] & 15];
+        }
+
         using namespace rapidjson;
         Document doc(kObjectType);
         Value params(kArrayType);
@@ -593,6 +649,15 @@ bool xmrig::DaemonClient::parseResponse(int64_t id, const rapidjson::Value &resu
     }
 
     int code = -1;
+#ifdef SUPPORT_JUNOCASH
+    // Junocash templates have "height" but no "blocktemplate_blob"
+    if (m_coin.isValid() && m_coin.name() && std::string(m_coin.name()) == std::string("Junocash") && result.HasMember("height")) {
+        if (parseJob(result, &code)) {
+            return true;
+        }
+    }
+    else
+#endif
     if (result.HasMember(kBlocktemplateBlob) && parseJob(result, &code)) {
         return true;
     }

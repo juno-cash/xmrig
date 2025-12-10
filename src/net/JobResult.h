@@ -99,6 +99,8 @@ public:
 public:
     inline void setJunocashNonce(const uint8_t *nonce32) { memcpy(m_junoNonce, nonce32, sizeof(m_junoNonce)); m_hasJunoNonce = true; }
     inline const uint8_t* junocashNonce() const { return m_hasJunoNonce ? m_junoNonce : nullptr; }
+    // For solo mining, the RandomX hash is stored in m_result
+    inline const uint8_t* junocashHash() const { return m_hasJunoNonce ? m_result : nullptr; }
 #endif
 
 private:

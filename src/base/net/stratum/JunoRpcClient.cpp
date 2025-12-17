@@ -55,16 +55,17 @@ std::string base64Encode(const std::string &input) {
 
     size_t i = 0;
     while (i < input.size()) {
-        uint32_t octet_a = i < input.size() ? static_cast<unsigned char>(input[i++]) : 0;
-        uint32_t octet_b = i < input.size() ? static_cast<unsigned char>(input[i++]) : 0;
-        uint32_t octet_c = i < input.size() ? static_cast<unsigned char>(input[i++]) : 0;
+        size_t remaining = input.size() - i;
+        uint32_t octet_a = static_cast<unsigned char>(input[i++]);
+        uint32_t octet_b = (remaining > 1) ? static_cast<unsigned char>(input[i++]) : 0;
+        uint32_t octet_c = (remaining > 2) ? static_cast<unsigned char>(input[i++]) : 0;
 
         uint32_t triple = (octet_a << 16) + (octet_b << 8) + octet_c;
 
         output += base64_chars[(triple >> 18) & 0x3F];
         output += base64_chars[(triple >> 12) & 0x3F];
-        output += (i > input.size() + 1) ? '=' : base64_chars[(triple >> 6) & 0x3F];
-        output += (i > input.size()) ? '=' : base64_chars[triple & 0x3F];
+        output += (remaining > 1) ? base64_chars[(triple >> 6) & 0x3F] : '=';
+        output += (remaining > 2) ? base64_chars[triple & 0x3F] : '=';
     }
 
     return output;

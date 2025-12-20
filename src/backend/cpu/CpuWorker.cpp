@@ -274,6 +274,11 @@ void xmrig::CpuWorker<N>::start()
                 if (m_job.isSoloMining()) {
                     memcpy(current_solo_nonces + i * 32, m_job.soloNonce(i), 32);
                 }
+                // For RX_JUNO stratum, also save full 32-byte nonce from blob
+                // (proxy may have set fixed byte that we need to preserve)
+                else if (job.algorithm() == Algorithm::RX_JUNO) {
+                    memcpy(current_solo_nonces + i * 32, m_job.blob() + m_job.nonceOffset() + i * job.size(), 32);
+                }
             }
 
 #           ifdef XMRIG_FEATURE_BENCHMARK
@@ -353,8 +358,8 @@ void xmrig::CpuWorker<N>::start()
                     else
 #                   endif
                     if (value < job.target()) {
-                        if (m_job.isSoloMining()) {
-                            // Solo mining: submit with full 256-bit nonce (use saved nonce, not current)
+                        if (m_job.isSoloMining() || job.algorithm() == Algorithm::RX_JUNO) {
+                            // Solo mining or RX_JUNO stratum: submit with full 256-bit nonce (use saved nonce, not current)
                             JobResults::submit(JobResult(job, current_solo_nonces + i * 32, m_hash + (i * 32)));
                         } else {
                             JobResults::submit(job, current_job_nonces[i], m_hash + (i * 32), job.hasMinerSignature() ? miner_signature_saved : nullptr);
